@@ -70,8 +70,7 @@ func main() {
 	api.Get("/vms/:vmName/devices", handlers.GetAttachedDevices)
 	api.Post("/vms/:vmName/attach", handlers.AttachDevice)
 	api.Post("/vms/:vmName/detach", handlers.DetachDevice)
-	api.Get("/devices-table", handlers.GetDeviceTableFragment)
-	api.Get("/favorites-table", handlers.GetFavoritesTableFragment)
+	api.Get("/devices-state", handlers.GetDevicesState)
 
 	// Favorites routes
 	api.Get("/favorites", handlers.GetFavorites)
