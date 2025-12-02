@@ -1,0 +1,33 @@
+{
+  "name": "vfio_usb_passthrough",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "pnpm run build:css:watch & pnpm run build:js -- --watch",
+    "build": "pnpm run build:css && pnpm run build:js",
+    "build:css": "pnpm dlx @tailwindcss/cli -i ./assets/src/styles.css -o ./assets/dist/styles.css",
+    "build:css:watch": "pnpm dlx @tailwindcss/cli -i ./assets/src/styles.css -o ./assets/dist/styles.css -w",
+    "build:js": "node build.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.1",
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.2",
+    "@tiptap/core": "^2.11.7",
+    "@tiptap/pm": "^2.11.7",
+    "@tiptap/starter-kit": "^2.11.7",
+    "alpinejs": "^2.8.2",
+    "daisyui": "^5.0.12",
+    "flowbite": "^3.1.2",
+    "htmx.org": "^1.9.10",
+    "hyperscript.org": "^0.8.0",
+    "tailwindcss": "^4.1.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.1"
+  }
+}

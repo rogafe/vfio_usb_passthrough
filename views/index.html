@@ -1,0 +1,325 @@
+<div class="flex flex-col gap-8" x-data="usbPassthrough()" x-init="init()">
+  <!-- VM Selection -->
+  <div class="card bg-base-100 shadow-xl">
+    <div class="card-body">
+      <h2 class="card-title">Select Virtual Machine</h2>
+      <div class="form-control w-full">
+        <label class="label">
+          <span class="label-text">Running VMs</span>
+        </label>
+        <select 
+          class="select select-bordered w-full" 
+          x-model="selectedVM"
+          @change="loadAttachedDevices()"
+          x-effect="$el.value = selectedVM || ''"
+        >
+          <option value="">-- Select a VM --</option>
+          <template x-for="vm in vms" :key="vm.name">
+            <option :value="vm.name" :selected="vm.name === selectedVM" x-text="vm.name"></option>
+          </template>
+        </select>
+      </div>
+      <div class="text-sm text-gray-500 mt-2" x-show="vms.length === 0">
+        No running VMs found. Please start a VM first.
+      </div>
+    </div>
+  </div>
+
+  <!-- Favorites Section -->
+  <div class="card bg-base-100 shadow-xl" x-data="{ showFavorites: false }" x-show="showFavorites">
+    <div class="card-body">
+      <h2 class="card-title">⭐ Favorite Devices</h2>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra w-full">
+          <thead>
+            <tr>
+              <th>Vendor:Product ID</th>
+              <th>Description</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="favorites-table-body" 
+                 hx-get="/api/favorites-table" 
+                 hx-trigger="refreshTable from:body, vmChanged from:body, refreshFavorites from:body"
+                 hx-include="#vm-name-input">
+                 x-on:htmx:after-swap="showFavorites = $el.querySelectorAll('tr').length > 0">
+            <!-- Content will be loaded via HTMX -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- USB Devices Table -->
+  <div class="card bg-base-100 shadow-xl">
+    <div class="card-body">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="card-title">USB Devices</h2>
+        <button 
+          class="btn btn-sm btn-primary"
+          @click="refreshDevices()"
+        >
+          <span>🔄 Refresh</span>
+        </button>
+      </div>
+
+      <!-- Devices Table -->
+      <div class="overflow-x-auto">
+        <!-- Hidden input for VM name to be included in HTMX requests -->
+        <input type="hidden" id="vm-name-input" name="vmName" 
+               :value="selectedVM || ''" 
+               x-effect="$el.value = selectedVM || ''; $el.setAttribute('value', selectedVM || '');">
+        <table class="table table-zebra w-full">
+          <thead>
+            <tr>
+              <th>Vendor:Product ID</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="device-table-body" 
+                 hx-get="/api/devices-table" 
+                 hx-trigger="refreshTable from:body, vmChanged from:body"
+                 hx-include="#vm-name-input">
+            <!-- Content will be loaded via HTMX -->
+            <tr><td colspan="4" class="text-center py-8 text-gray-500">Loading devices...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Success/Error Toast -->
+  <div 
+    x-show="toast.show"
+    class="toast toast-top toast-end"
+    x-transition
+  >
+    <div 
+      class="alert"
+      :class="toast.type === 'success' ? 'alert-success' : 'alert-error'"
+    >
+      <span x-text="toast.message"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+function usbPassthrough() {
+  return {
+    vms: [],
+    selectedVM: '',
+    actionLoading: false,
+    toast: {
+      show: false,
+      message: '',
+      type: 'success'
+    },
+
+    async init() {
+      // Only load VMs - HTMX will handle loading USB devices and favorites tables
+      await this.loadVMs();
+      // Trigger initial HTMX table loads after VMs are loaded
+      // Small delay to ensure Alpine.js has updated the DOM and input value
+      setTimeout(() => {
+        document.body.dispatchEvent(new CustomEvent('refreshTable'));
+      }, 150);
+    },
+
+    async loadVMs() {
+      try {
+        const response = await fetch('/api/vms');
+        if (!response.ok) {
+          throw new Error('Failed to load VMs');
+        }
+        const data = await response.json();
+        this.vms = data.vms || [];
+        
+        // Auto-select VM if only one is running
+        if (this.vms.length === 1 && !this.selectedVM) {
+          this.selectedVM = this.vms[0].name;
+          // Small delay to ensure input value is updated before loadAttachedDevices triggers HTMX
+          setTimeout(async () => {
+            await this.loadAttachedDevices();
+          }, 50);
+        }
+      } catch (error) {
+        this.showToast('Failed to load VMs: ' + error.message, 'error');
+      }
+    },
+
+    // Removed loadUSBDevices - HTMX handles this via /api/devices-table
+
+    async loadAttachedDevices() {
+      // HTMX will handle loading the tables
+      // Trigger HTMX refresh via custom event (HTMX listens to 'vmChanged' from body)
+      document.body.dispatchEvent(new CustomEvent('vmChanged'));
+    },
+
+    // Removed isAttached - HTMX tables handle this state
+
+    async attachDevice(device) {
+      if (!this.selectedVM) {
+        this.showToast('Please select a VM first', 'error');
+        return;
+      }
+
+      this.actionLoading = true;
+      try {
+        const response = await fetch(`/api/vms/${this.selectedVM}/attach`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            vendorId: device.vendorId,
+            productId: device.productId,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to attach device');
+        }
+
+        this.showToast(data.message || 'Device attached successfully', 'success');
+        // HTMX will refresh the tables automatically via HX-Trigger header
+      } catch (error) {
+        this.showToast('Failed to attach device: ' + error.message, 'error');
+      } finally {
+        this.actionLoading = false;
+      }
+    },
+
+    async detachDevice(device) {
+      if (!this.selectedVM) {
+        this.showToast('Please select a VM first', 'error');
+        return;
+      }
+
+      this.actionLoading = true;
+      try {
+        const response = await fetch(`/api/vms/${this.selectedVM}/detach`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            vendorId: device.vendorId,
+            productId: device.productId,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to detach device');
+        }
+
+        this.showToast(data.message || 'Device detached successfully', 'success');
+        // HTMX will refresh the tables automatically via HX-Trigger header
+      } catch (error) {
+        this.showToast('Failed to detach device: ' + error.message, 'error');
+      } finally {
+        this.actionLoading = false;
+      }
+    },
+
+    async refreshDevices() {
+      // Trigger HTMX refresh for both tables via custom event
+      // HTMX listens to 'refreshTable' event from body
+      document.body.dispatchEvent(new CustomEvent('refreshTable'));
+    },
+
+    // Removed loadFavorites - HTMX handles this via /api/favorites-table
+
+    async addFavorite(device) {
+      this.actionLoading = true;
+      try {
+        const response = await fetch('/api/favorites', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            vendorId: device.vendorId,
+            productId: device.productId,
+            description: device.description || '',
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to add favorite');
+        }
+
+        this.showToast('Device added to favorites', 'success');
+        // Trigger HTMX refresh for favorites table via custom event
+        document.body.dispatchEvent(new CustomEvent('refreshFavorites'));
+      } catch (error) {
+        this.showToast('Failed to add favorite: ' + error.message, 'error');
+      } finally {
+        this.actionLoading = false;
+      }
+    },
+
+    async removeFavorite(device) {
+      this.actionLoading = true;
+      try {
+        const response = await fetch('/api/favorites', {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            vendorId: device.vendorId,
+            productId: device.productId,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to remove favorite');
+        }
+
+        this.showToast('Device removed from favorites', 'success');
+        // Trigger HTMX refresh for favorites table via custom event
+        document.body.dispatchEvent(new CustomEvent('refreshFavorites'));
+      } catch (error) {
+        this.showToast('Failed to remove favorite: ' + error.message, 'error');
+      } finally {
+        this.actionLoading = false;
+      }
+    },
+
+    // Removed isFavorite - HTMX tables handle this state
+
+    async attachFavoriteDevice(fav) {
+      if (!this.selectedVM) {
+        this.showToast('Please select a VM first', 'error');
+        return;
+      }
+
+      // Create a device-like object from favorite
+      const device = {
+        vendorId: fav.vendorId,
+        productId: fav.productId,
+        description: fav.description
+      };
+
+      await this.attachDevice(device);
+    },
+
+    showToast(message, type = 'success') {
+      this.toast = {
+        show: true,
+        message: message,
+        type: type
+      };
+      setTimeout(() => {
+        this.toast.show = false;
+      }, 3000);
+    }
+  };
+}
+</script>
