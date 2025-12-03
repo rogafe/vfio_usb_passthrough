@@ -107,8 +107,11 @@ func main() {
 
 	app.Get("/", handlers.GetIndex)
 
-	// Start server with configurable bind address
-	bindAddr := middleware.GetBindAddr()
+	// Start server with configurable bind address based on network interface
+	bindAddr, err := middleware.GetBindAddr()
+	if err != nil {
+		log.Fatalf("Failed to determine bind address: %v", err)
+	}
 	log.Printf("Starting server on %s", bindAddr)
 	log.Fatal(app.Listen(bindAddr))
 }
