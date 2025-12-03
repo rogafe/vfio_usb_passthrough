@@ -3,10 +3,12 @@ package middleware
 import (
 	"bufio"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -89,9 +91,115 @@ func getInterfaceSubnet(ifaceName string) (string, error) {
 	return "", fmt.Errorf("no IPv4 address found for interface %s", ifaceName)
 }
 
-// getSubnetsFromDefaultRoutes finds all subnets from interfaces that have a default route
-// This allows only local network traffic, blocking internet-originated requests
-func getSubnetsFromDefaultRoutes() []string {
+// virshNetworkIP represents the IP configuration in a virsh network XML
+type virshNetworkIP struct {
+	Address string `xml:"address,attr"`
+	Netmask string `xml:"netmask,attr"`
+	Prefix  string `xml:"prefix,attr"` // Alternative to netmask
+}
+
+// virshNetwork represents a virsh network XML structure
+type virshNetwork struct {
+	XMLName xml.Name         `xml:"network"`
+	Name    string           `xml:"name"`
+	IPs     []virshNetworkIP `xml:"ip"`
+}
+
+// netmaskToCIDR converts a netmask string (e.g., "255.255.255.0") to CIDR prefix length
+func netmaskToCIDR(netmask string) (int, error) {
+	ip := net.ParseIP(netmask)
+	if ip == nil {
+		return 0, fmt.Errorf("invalid netmask: %s", netmask)
+	}
+
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 0, fmt.Errorf("not an IPv4 netmask: %s", netmask)
+	}
+
+	mask := net.IPMask(ip4)
+	ones, _ := mask.Size()
+	return ones, nil
+}
+
+// getVirshNetworkSubnets queries libvirt for active networks and returns their subnets
+func getVirshNetworkSubnets() []string {
+	var subnets []string
+
+	// Get list of active networks
+	cmd := exec.Command("virsh", "net-list", "--name")
+	cmd.Env = append(os.Environ(), "LIBVIRT_DEFAULT_URI=qemu:///system")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Security: Warning - could not list virsh networks: %v", err)
+		return subnets
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		netName := strings.TrimSpace(scanner.Text())
+		if netName == "" {
+			continue
+		}
+
+		// Get network XML
+		xmlCmd := exec.Command("virsh", "net-dumpxml", netName)
+		xmlCmd.Env = append(os.Environ(), "LIBVIRT_DEFAULT_URI=qemu:///system")
+		xmlOutput, err := xmlCmd.Output()
+		if err != nil {
+			log.Printf("Security: Warning - could not get XML for virsh network %s: %v", netName, err)
+			continue
+		}
+
+		// Parse the XML
+		var network virshNetwork
+		if err := xml.Unmarshal(xmlOutput, &network); err != nil {
+			log.Printf("Security: Warning - could not parse XML for virsh network %s: %v", netName, err)
+			continue
+		}
+
+		// Extract subnets from IP configurations
+		for _, ipConfig := range network.IPs {
+			if ipConfig.Address == "" {
+				continue
+			}
+
+			ip := net.ParseIP(ipConfig.Address)
+			if ip == nil || ip.To4() == nil {
+				continue
+			}
+
+			var cidrPrefix int
+			if ipConfig.Prefix != "" {
+				fmt.Sscanf(ipConfig.Prefix, "%d", &cidrPrefix)
+			} else if ipConfig.Netmask != "" {
+				cidrPrefix, err = netmaskToCIDR(ipConfig.Netmask)
+				if err != nil {
+					log.Printf("Security: Warning - invalid netmask for virsh network %s: %v", netName, err)
+					continue
+				}
+			} else {
+				// Default to /24 if no mask specified
+				cidrPrefix = 24
+			}
+
+			// Calculate network address
+			mask := net.CIDRMask(cidrPrefix, 32)
+			networkIP := ip.To4().Mask(mask)
+			subnet := fmt.Sprintf("%s/%d", networkIP.String(), cidrPrefix)
+			subnets = append(subnets, subnet)
+			log.Printf("Security: Auto-allowing subnet %s from virsh network %s", subnet, netName)
+		}
+	}
+
+	return subnets
+}
+
+// getAutoDetectedSubnets finds all subnets that should be allowed by default:
+// 1. Localhost (127.0.0.0/8)
+// 2. Subnets from interfaces with default routes (local network)
+// 3. Subnets from libvirt/virsh networks (VM networks)
+func getAutoDetectedSubnets() []string {
 	var subnets []string
 	seen := make(map[string]bool)
 
@@ -101,12 +209,6 @@ func getSubnetsFromDefaultRoutes() []string {
 
 	// Get interfaces with default routes
 	defaultRouteIfaces := getDefaultRouteInterfaces()
-	if len(defaultRouteIfaces) == 0 {
-		log.Printf("Security: No default route interfaces found, only localhost will be allowed")
-		return subnets
-	}
-
-	// Get subnet for each interface with a default route
 	for _, ifaceName := range defaultRouteIfaces {
 		subnet, err := getInterfaceSubnet(ifaceName)
 		if err != nil {
@@ -119,6 +221,19 @@ func getSubnetsFromDefaultRoutes() []string {
 			subnets = append(subnets, subnet)
 			log.Printf("Security: Auto-allowing subnet %s from default-route interface %s", subnet, ifaceName)
 		}
+	}
+
+	// Get virsh network subnets
+	virshSubnets := getVirshNetworkSubnets()
+	for _, subnet := range virshSubnets {
+		if !seen[subnet] {
+			seen[subnet] = true
+			subnets = append(subnets, subnet)
+		}
+	}
+
+	if len(subnets) == 1 {
+		log.Printf("Security: No default route interfaces or virsh networks found, only localhost will be allowed")
 	}
 
 	return subnets
@@ -211,16 +326,18 @@ func ListAvailableInterfaces() []string {
 
 // GetAllowedNetworks returns the allowed networks
 // If ALLOWED_NETWORKS env var is set, use that
-// Otherwise, auto-detect subnets from interfaces with default routes (0.0.0.0)
-// This ensures only local network traffic is allowed, blocking internet-originated requests
+// Otherwise, auto-detect subnets from:
+// - Interfaces with default routes (local network)
+// - Libvirt/virsh networks (VM networks)
+// This ensures only local and VM network traffic is allowed, blocking internet-originated requests
 func GetAllowedNetworks() string {
 	allowedNetworks := os.Getenv("ALLOWED_NETWORKS")
 	if allowedNetworks != "" {
 		return allowedNetworks
 	}
 
-	// Auto-detect subnets from interfaces with default routes
-	subnets := getSubnetsFromDefaultRoutes()
+	// Auto-detect subnets
+	subnets := getAutoDetectedSubnets()
 	return strings.Join(subnets, ",")
 }
 
