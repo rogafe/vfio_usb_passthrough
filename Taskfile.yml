@@ -39,6 +39,11 @@ tasks:
     cmds:
       - pnpm run build
 
+  build:release:
+    desc: Build release binary with embedded assets (runs pnpm build first)
+    cmds:
+      - ./build-release.sh
+
   docker:up:
     desc: Start Docker Compose services
     cmds:

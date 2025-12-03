@@ -1,0 +1,29 @@
+[Unit]
+Description=VFIO USB Passthrough Service
+Documentation=https://github.com/yourusername/vfio-usb-passthrough
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/lib/vfio-usb-passthrough
+ExecStart=/usr/local/bin/vfio-usb-passthrough
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vfio-usb-passthrough
+
+# Environment
+Environment=ENV=production
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits (adjust as needed)
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
