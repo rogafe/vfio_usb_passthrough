@@ -16,6 +16,7 @@ SyslogIdentifier=vfio-usb-passthrough
 
 # Environment
 Environment=ENV=production
+Environment=BIND_PORT=9876
 
 # Security settings
 NoNewPrivileges=true

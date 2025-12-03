@@ -15,7 +15,7 @@ import (
 )
 
 // DefaultBindPort is the default port to bind to
-const DefaultBindPort = "3000"
+const DefaultBindPort = "9876"
 
 // getDefaultRouteInterfaces reads /proc/net/route to find interfaces with default routes (0.0.0.0)
 // Returns a list of interface names that have a default route

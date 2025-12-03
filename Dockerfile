@@ -55,7 +55,7 @@ COPY --from=frontend /app/assets/dist ./assets/dist
 ENV ENV=production
 
 # Expose the application port
-EXPOSE 3000
+EXPOSE 9876
 
 # Run the application
 CMD ["./vfio_usb_passthrough"]
