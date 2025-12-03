@@ -49,3 +49,4 @@ testdata/*
 data/*
 
 vfio_usb_passthrough
+vfio-usb-passthrough
