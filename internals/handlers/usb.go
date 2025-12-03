@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,79 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// VM name validation errors
+var (
+	ErrVMNameEmpty         = errors.New("VM name is required")
+	ErrVMNameInvalidFormat = errors.New("VM name contains invalid characters (only alphanumeric, dash, underscore allowed, max 64 chars)")
+	ErrVMNotRunning        = errors.New("VM is not running or does not exist")
+)
+
+// vmNamePattern validates VM names: alphanumeric, dash, underscore only, max 64 chars
+var vmNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// isValidVMNameFormat checks if a VM name has valid format
+func isValidVMNameFormat(vmName string) bool {
+	if vmName == "" || len(vmName) > 64 {
+		return false
+	}
+	return vmNamePattern.MatchString(vmName)
+}
+
+// getRunningVMNames returns a list of currently running VM names
+func getRunningVMNames() ([]string, error) {
+	cmd := exec.Command("virsh", "list", "--name", "--state-running")
+	cmd.Env = append(os.Environ(), "LIBVIRT_DEFAULT_URI=qemu:///system")
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list running VMs: %w", err)
+	}
+
+	var vms []string
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		vmName := strings.TrimSpace(scanner.Text())
+		if vmName != "" {
+			vms = append(vms, vmName)
+		}
+	}
+
+	return vms, nil
+}
+
+// isVMRunning checks if a VM is currently running
+func isVMRunning(vmName string) bool {
+	runningVMs, err := getRunningVMNames()
+	if err != nil {
+		log.Printf("Error checking running VMs: %v", err)
+		return false
+	}
+
+	for _, vm := range runningVMs {
+		if vm == vmName {
+			return true
+		}
+	}
+	return false
+}
+
+// validateVMName performs full validation of a VM name
+func validateVMName(vmName string) error {
+	if vmName == "" {
+		return ErrVMNameEmpty
+	}
+
+	if !isValidVMNameFormat(vmName) {
+		return ErrVMNameInvalidFormat
+	}
+
+	if !isVMRunning(vmName) {
+		return ErrVMNotRunning
+	}
+
+	return nil
+}
 
 // VMResponse represents a VM in the API response
 type VMResponse struct {
@@ -101,9 +175,12 @@ func ListUSBDevices(c *fiber.Ctx) error {
 // GetAttachedDevices returns a list of USB devices attached to a VM
 func GetAttachedDevices(c *fiber.Ctx) error {
 	vmName := c.Params("vmName")
-	if vmName == "" {
+
+	// Validate VM name
+	if err := validateVMName(vmName); err != nil {
+		log.Printf("GetAttachedDevices: VM validation failed for '%s': %v", vmName, err)
 		return c.Status(400).JSON(fiber.Map{
-			"error": "VM name is required",
+			"error": err.Error(),
 		})
 	}
 
@@ -125,6 +202,16 @@ func GetAttachedDevices(c *fiber.Ctx) error {
 // This endpoint eliminates multiple round-trips and race conditions
 func GetDevicesState(c *fiber.Ctx) error {
 	vmName := c.Query("vmName", "")
+
+	// Validate VM name if provided
+	if vmName != "" {
+		if err := validateVMName(vmName); err != nil {
+			log.Printf("GetDevicesState: VM validation failed for '%s': %v", vmName, err)
+			return c.Status(400).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+	}
 
 	// Run independent operations in parallel using goroutines
 	var usbDevices []USBDeviceResponse
@@ -211,9 +298,12 @@ func GetDevicesState(c *fiber.Ctx) error {
 // AttachDevice attaches a USB device to a VM
 func AttachDevice(c *fiber.Ctx) error {
 	vmName := c.Params("vmName")
-	if vmName == "" {
+
+	// Validate VM name
+	if err := validateVMName(vmName); err != nil {
+		log.Printf("AttachDevice: VM validation failed for '%s': %v", vmName, err)
 		return c.Status(400).JSON(fiber.Map{
-			"error": "VM name is required",
+			"error": err.Error(),
 		})
 	}
 
@@ -285,9 +375,12 @@ func AttachDevice(c *fiber.Ctx) error {
 // DetachDevice detaches a USB device from a VM
 func DetachDevice(c *fiber.Ctx) error {
 	vmName := c.Params("vmName")
-	if vmName == "" {
+
+	// Validate VM name
+	if err := validateVMName(vmName); err != nil {
+		log.Printf("DetachDevice: VM validation failed for '%s': %v", vmName, err)
 		return c.Status(400).JSON(fiber.Map{
-			"error": "VM name is required",
+			"error": err.Error(),
 		})
 	}
 

@@ -4,16 +4,19 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/sprig/v3"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 
 	"vfio_usb_passthrough/internals/db"
 	"vfio_usb_passthrough/internals/handlers"
+	"vfio_usb_passthrough/internals/middleware"
 )
 
 func init() {
@@ -55,14 +58,37 @@ func main() {
 	// add a middleware to log the request
 	app.Use(logger.New())
 
+	// Initialize and apply IP filter middleware
+	ipFilter, err := middleware.NewIPFilterMiddleware()
+	if err != nil {
+		log.Fatalf("Failed to initialize IP filter middleware: %v", err)
+	}
+	app.Use(ipFilter)
+
 	// Static files
 	app.Static("/assets", "./assets/dist")
 
 	// Theme toggle route
 	app.Post("/theme/toggle", handlers.ToggleTheme)
 
-	// API routes for USB passthrough
+	// API routes for USB passthrough with rate limiting
 	api := app.Group("/api")
+
+	// Apply rate limiting: 20 requests per minute per IP
+	api.Use(limiter.New(limiter.Config{
+		Max:        20,
+		Expiration: 1 * time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			log.Printf("Rate limit exceeded for IP: %s", c.IP())
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "Rate limit exceeded. Please try again later.",
+			})
+		},
+	}))
+
 	api.Get("/vms", handlers.ListRunningVMs)
 	// The following lines were causing compile errors due to missing handler functions.
 	// Ensure that the handlers are properly defined and imported in "internals/handlers".
@@ -81,6 +107,8 @@ func main() {
 
 	app.Get("/", handlers.GetIndex)
 
-	// Start server
-	log.Fatal(app.Listen(":3000"))
+	// Start server with configurable bind address
+	bindAddr := middleware.GetBindAddr()
+	log.Printf("Starting server on %s", bindAddr)
+	log.Fatal(app.Listen(bindAddr))
 }
